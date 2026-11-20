@@ -1,0 +1,6 @@
+{
+  "name": "AspectIQ — Aspect-Based Sentiment Intelligence System",
+  "description": "Academic NLP dashboard for aspect-based sentiment analysis, SemEval-2014 model benchmarking, and structured review intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
