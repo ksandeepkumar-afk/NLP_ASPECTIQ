@@ -1,396 +1,587 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Cpu, MessageSquareText } from 'lucide-react';
-import { MODEL_REGISTRY_SPECS } from '../../data/sampleDataset';
-import { absaModelAdapter, InferenceResponse } from '../../services/modelAdapter';
-import { geminiExplanationService } from '../../services/explanationService';
 import {
-  AspectSpanPrediction,
-  GeminiExplanationPayload,
-  ReviewDomain,
-  SampleReviewRecord,
-  SentimentPolarity,
-} from '../../types/absa';
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Flag,
+  Loader2,
+  Play,
+  RotateCcw,
+  ThumbsUp,
+} from 'lucide-react';
+import { OPTIONAL_STATEMENT_EXAMPLES } from '../../data/sampleDataset';
+import { validateSingleStatementInput } from '../../services/csvParser';
+import { analyzeSingleStatement, submitPredictionFeedback } from '../../services/modelAdapter';
+import { exportSingleStatementJson } from '../../services/reportExport';
+import { DashboardSection, StatementAnalysisOutput } from '../../types/absa';
 import { SentimentLabel } from '../common/SentimentLabel';
+import { InteractiveWordExplorer } from './InteractiveWordExplorer';
 
 interface ReviewWorkbenchProps {
-  sampleReviews: SampleReviewRecord[];
-  selectedSampleId: string;
-  onSelectSampleId: (id: string) => void;
-}
-
-function renderHighlightedReviewText(text: string, aspects: AspectSpanPrediction[]) {
-  if (aspects.length === 0) {
-    return <span>{text}</span>;
-  }
-
-  const sorted = [...aspects].sort((a, b) => a.startOffset - b.startOffset);
-  const segments: Array<{ key: string; content: string; aspect?: AspectSpanPrediction }> = [];
-  let cursor = 0;
-
-  for (const asp of sorted) {
-    if (asp.startOffset < cursor || asp.endOffset > text.length) continue;
-    if (asp.startOffset > cursor) {
-      segments.push({
-        key: `txt-${cursor}`,
-        content: text.slice(cursor, asp.startOffset),
-      });
-    }
-    segments.push({
-      key: asp.id,
-      content: text.slice(asp.startOffset, asp.endOffset),
-      aspect: asp,
-    });
-    cursor = asp.endOffset;
-  }
-
-  if (cursor < text.length) {
-    segments.push({
-      key: `txt-${cursor}`,
-      content: text.slice(cursor),
-    });
-  }
-
-  return (
-    <>
-      {segments.map((seg) => {
-        if (!seg.aspect) {
-          return <span key={seg.key}>{seg.content}</span>;
-        }
-        const highlightClass =
-          seg.aspect.polarity === SentimentPolarity.Positive
-            ? 'bg-emerald-50 text-emerald-900 border-b-2 border-emerald-600'
-            : seg.aspect.polarity === SentimentPolarity.Negative
-            ? 'bg-rose-50 text-rose-900 border-b-2 border-rose-600'
-            : 'bg-slate-100 text-slate-900 border-b-2 border-slate-500';
-
-        return (
-          <mark key={seg.key} className={`${highlightClass} px-1 rounded-xs font-medium`}>
-            {seg.content}
-          </mark>
-        );
-      })}
-    </>
-  );
+  initialStatement?: StatementAnalysisOutput | null;
+  draftText?: string;
+  onDraftTextChange?: (text: string) => void;
+  savedResult?: StatementAnalysisOutput | null;
+  onSavedResultChange?: (result: StatementAnalysisOutput | null) => void;
+  onNavigateSection: (section: DashboardSection) => void;
 }
 
 export function ReviewWorkbench({
-  sampleReviews,
-  selectedSampleId,
-  onSelectSampleId,
+  initialStatement,
+  draftText,
+  onDraftTextChange,
+  savedResult,
+  onSavedResultChange,
+  onNavigateSection,
 }: ReviewWorkbenchProps) {
-  const [mode, setMode] = useState<'sample' | 'custom'>('sample');
-  const [customText, setCustomText] = useState('');
-  const [customDomain, setCustomDomain] = useState<ReviewDomain>(ReviewDomain.Electronics);
-  const [selectedModelId, setSelectedModelId] = useState<string>(MODEL_REGISTRY_SPECS[3].id);
-  const [inferenceResult, setInferenceResult] = useState<InferenceResponse | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [explanationResult, setExplanationResult] = useState<GeminiExplanationPayload | null>(null);
+  const [internalText, setInternalText] = useState(initialStatement?.originalText ?? '');
+  const [internalResult, setInternalResult] = useState<StatementAnalysisOutput | null>(
+    initialStatement ?? null
+  );
 
-  const activeSample =
-    sampleReviews.find((item) => item.id === selectedSampleId) ?? sampleReviews[0];
+  const statementText = draftText !== undefined ? draftText : internalText;
+  const setStatementText = (val: string) => {
+    if (onDraftTextChange) onDraftTextChange(val);
+    else setInternalText(val);
+  };
+
+  const result = savedResult !== undefined ? savedResult : internalResult;
+  const setResult = (val: StatementAnalysisOutput | null) => {
+    if (onSavedResultChange) onSavedResultChange(val);
+    else setInternalResult(val);
+  };
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [processingTimeMs, setProcessingTimeMs] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Explainable AI Feedback state
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackNotes, setFeedbackNotes] = useState('');
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
 
   useEffect(() => {
-    setExplanationResult(null);
-  }, [selectedSampleId, mode]);
+    if (initialStatement) {
+      if (onDraftTextChange) onDraftTextChange(initialStatement.originalText);
+      else setInternalText(initialStatement.originalText);
+      if (onSavedResultChange) onSavedResultChange(initialStatement);
+      else setInternalResult(initialStatement);
+      setErrorMessage(null);
+      setFeedbackStatus(null);
+      setFeedbackOpen(false);
+    }
+  }, [initialStatement, onDraftTextChange, onSavedResultChange]);
 
-  const handleRunCustomValidation = async (e: React.FormEvent) => {
+  const handleTextChange = (value: string) => {
+    setStatementText(value);
+    if (errorMessage) setErrorMessage(null);
+  };
+
+  const handleClear = () => {
+    setStatementText('');
+    setResult(null);
+    setErrorMessage(null);
+    setProcessingTimeMs(null);
+    setFeedbackStatus(null);
+    setFeedbackOpen(false);
+    setFeedbackNotes('');
+  };
+
+  const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
+    const validation = validateSingleStatementInput(statementText);
+    if (!validation.valid) {
+      setErrorMessage(validation.error);
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setErrorMessage(null);
+    setFeedbackStatus(null);
+    setFeedbackOpen(false);
+
     try {
-      const response = await absaModelAdapter.predictAspects({
-        reviewText: customText,
-        domain: customDomain,
-        modelId: selectedModelId,
-      });
-      setInferenceResult(response);
+      const response = await analyzeSingleStatement(statementText.trim());
+      if (!response.ok || !response.result) {
+        setErrorMessage(response.errorMessage ?? 'Unable to analyze statement.');
+        return;
+      }
+
+      setResult(response.result);
+      setProcessingTimeMs(response.processingTimeMs ?? null);
     } finally {
-      setIsSubmitting(false);
+      setIsAnalyzing(false);
     }
   };
 
-  const handleRequestExplanationPreview = async () => {
-    if (!activeSample) return;
-    const result = await geminiExplanationService.generateAspectExplanation({
-      reviewText: activeSample.reviewText,
-      aspects: activeSample.prediction.aspects,
-    });
-    setExplanationResult(result);
+  const handleSubmitFeedback = async (isCorrect: boolean) => {
+    if (!result) return;
+    setIsSubmittingFeedback(true);
+    try {
+      const resp = await submitPredictionFeedback({
+        analysisId: result.analysisId ?? `ANL-LOCAL-${Date.now()}`,
+        inputText: result.originalText,
+        predictedSentiment: result.overallSentiment,
+        isCorrect,
+        reportedIssue: isCorrect ? null : 'User flagged prediction discrepancy',
+        notes: isCorrect ? null : feedbackNotes.trim() || null,
+      });
+      if (resp.ok) {
+        setFeedbackStatus(
+          isCorrect
+            ? 'Feedback recorded: Marked accurate (saved for review; not auto-used for training).'
+            : 'Discrepancy flagged and stored in dataset review log.'
+        );
+        setFeedbackOpen(false);
+        setFeedbackNotes('');
+      }
+    } finally {
+      setIsSubmittingFeedback(false);
+    }
   };
 
   return (
     <div className="space-y-6">
-      {/* Mode Switcher */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="font-display text-base font-semibold text-slate-900">
-            Single Review Inspection & Input Validation
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Inspect annotated sample records or test client-side validation on custom review input
-          </p>
-        </div>
+      {/* Main Statement Input Card */}
+      <section className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
+          <div>
+            <h2 className="font-display text-lg font-semibold text-white">
+              What does this statement actually mean?
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Domain-independent analysis across sentiment, comment type, tone, emotion, intent,
+              sarcasm, negation, and dynamic aspects.
+            </p>
+          </div>
 
-        <div
-          className="inline-flex items-center p-1 bg-slate-100 rounded-lg shrink-0 self-start sm:self-center"
-          role="group"
-          aria-label="Workbench mode"
-        >
           <button
             type="button"
-            onClick={() => setMode('sample')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-              mode === 'sample'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
+            onClick={() => onNavigateSection(DashboardSection.BatchIngestion)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#131B2E] hover:bg-slate-800 border border-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
-            Inspect Sample Record
-          </button>
-          <button
-            type="button"
-            onClick={() => setMode('custom')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-              mode === 'custom'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            Test Custom Input
+            <span>Open Batch Intelligence</span>
           </button>
         </div>
-      </div>
 
-      {mode === 'sample' && activeSample && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left: Sample Selector & Span Highlighted Text */}
-          <section className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
-              <div>
-                <p className="text-xs font-medium text-slate-500">
-                  Sample Record · {activeSample.domain} · {activeSample.createdAt}
-                </p>
-                <h3 className="font-display text-base font-semibold text-slate-900 mt-0.5">
-                  {activeSample.productOrVenue}
-                </h3>
-              </div>
+        <form onSubmit={handleAnalyze} className="space-y-4">
+          <label className="block space-y-2">
+            <span className="sr-only">Statement to analyze</span>
+            <textarea
+              rows={5}
+              value={statementText}
+              onChange={(e) => handleTextChange(e.target.value)}
+              placeholder="Enter any sentence, comment, review, or statement to analyze..."
+              className="w-full px-4 py-3 text-sm text-slate-100 bg-[#131B2E] border border-slate-700/80 rounded-lg placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 leading-relaxed"
+            />
+          </label>
 
-              <label className="block shrink-0">
-                <span className="sr-only">Select sample review</span>
-                <select
-                  value={activeSample.id}
-                  onChange={(e) => onSelectSampleId(e.target.value)}
-                  className="px-3 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-200 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                >
-                  {sampleReviews.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.id} — {item.productOrVenue}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+          {/* Optional Example Statements */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-400">Try example:</span>
+            {OPTIONAL_STATEMENT_EXAMPLES.map((ex) => (
+              <button
+                key={ex.label}
+                type="button"
+                onClick={() => {
+                  setStatementText(ex.text);
+                  setErrorMessage(null);
+                }}
+                className="px-2.5 py-1 text-xs font-medium text-slate-300 bg-[#131B2E] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded-md transition-colors whitespace-nowrap"
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
 
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-slate-500">
-                Review Text with Sample Aspect Span Highlights
-              </p>
-              <blockquote className="text-sm leading-relaxed text-slate-800 bg-slate-50 border border-slate-200 rounded-lg p-4">
-                {renderHighlightedReviewText(
-                  activeSample.reviewText,
-                  activeSample.prediction.aspects
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <span className="text-xs text-slate-400 font-mono tabular-nums">
+              {statementText.length} / 4000 characters
+            </span>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={isAnalyzing && !statementText && !result}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-300 bg-[#131B2E] hover:bg-slate-800 border border-slate-800 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap"
+              >
+                <RotateCcw className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>Clear</span>
+              </button>
+
+              <button
+                type="submit"
+                disabled={isAnalyzing}
+                className="inline-flex items-center gap-2 px-5 py-2 text-xs font-medium text-white bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1322]"
+              >
+                {isAnalyzing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                 )}
-              </blockquote>
+                <span>{isAnalyzing ? 'Analyzing...' : 'Analyze'}</span>
+              </button>
+            </div>
+          </div>
+        </form>
+
+        {errorMessage && (
+          <div
+            role="alert"
+            className="p-4 rounded-lg border bg-rose-950/40 border-rose-500/30 text-rose-200 text-xs flex items-start gap-3"
+          >
+            <AlertCircle className="w-4 h-4 text-rose-400 mt-0.5 shrink-0" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="font-semibold text-rose-100">Validation / Analysis Error</p>
+              <p className="leading-relaxed">{errorMessage}</p>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Structured Analysis Outputs */}
+      {result && (
+        <div className="space-y-6">
+          {/* 5 Independent Classification Dimensions */}
+          <section
+            aria-label="Independent Classification Dimensions"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4"
+          >
+            <div className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-4 space-y-1.5">
+              <p className="text-xs font-medium text-slate-400">A. Overall Sentiment</p>
+              <div className="pt-0.5">
+                <SentimentLabel polarity={result.overallSentiment} />
+              </div>
+              <p className="text-xs text-slate-400">
+                Uncertainty:{' '}
+                <span className="font-medium text-slate-200">{result.uncertaintyLevel}</span>
+              </p>
             </div>
 
-            {/* Prediction Layer Table (Clearly separated from Gemini explanations) */}
-            <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Cpu className="w-4 h-4 text-slate-500" aria-hidden="true" />
-                  <h4 className="text-sm font-semibold text-slate-900">
-                    Layer 1: Model Prediction Structure (Sample Data)
-                  </h4>
-                </div>
-                <span className="text-xs text-slate-500 font-mono">
-                  {activeSample.prediction.aspects.length} aspects
-                </span>
+            <div className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-4 space-y-1.5">
+              <p className="text-xs font-medium text-slate-400">B. Comment Type</p>
+              <p className="text-sm font-semibold text-white leading-snug">
+                {result.commentTypes.join(' · ')}
+              </p>
+              <p className="text-xs text-slate-400">Pragmatic classification</p>
+            </div>
+
+            <div className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-4 space-y-1.5">
+              <p className="text-xs font-medium text-slate-400">C. Tone</p>
+              <p className="text-sm font-semibold text-white">{result.tone}</p>
+              <p className="text-xs text-slate-400">Delivery & attitude</p>
+            </div>
+
+            <div className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-4 space-y-1.5">
+              <p className="text-xs font-medium text-slate-400">D. Emotion</p>
+              <p className="text-sm font-semibold text-white">{result.emotion}</p>
+              <p className="text-xs text-slate-400">Expressed affect</p>
+            </div>
+
+            <div className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-4 space-y-1.5">
+              <p className="text-xs font-medium text-slate-400">E. Communication Intent</p>
+              <p className="text-sm font-semibold text-white leading-snug">
+                {result.communicationIntent}
+              </p>
+              <p className="text-xs text-slate-400">Speaker objective</p>
+            </div>
+          </section>
+
+          {/* Uncertainty / Ambiguity Banner if Moderate or High */}
+          {(result.uncertaintyLevel !== 'Low' || result.insights.ambiguityNote) && (
+            <section className="bg-amber-950/35 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3 text-xs text-amber-200">
+              <AlertTriangle
+                className="w-4 h-4 text-amber-400 mt-0.5 shrink-0"
+                aria-hidden="true"
+              />
+              <div className="space-y-1">
+                <p className="font-semibold text-amber-100">
+                  Ambiguity / Uncertainty Notice ({result.uncertaintyLevel} uncertainty)
+                </p>
+                <p className="leading-relaxed">
+                  {result.uncertaintyReason ||
+                    result.insights.ambiguityNote ||
+                    'This statement may carry context-dependent or ambiguous intent.'}
+                </p>
+              </div>
+            </section>
+          )}
+
+          {/* Interactive Word-Level Explorer */}
+          <section className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+              <div>
+                <h3 className="font-display text-base font-semibold text-white">
+                  Interactive Word-Level Explorer
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Click any highlighted phrase to inspect its classification, aspect link, and
+                  provenance
+                </p>
+              </div>
+              <div className="flex items-center gap-3 text-xs text-slate-400 shrink-0">
+                {result.analysisId && <span className="font-mono">{result.analysisId}</span>}
+                {processingTimeMs !== null && (
+                  <span className="font-mono tabular-nums">{processingTimeMs} ms</span>
+                )}
+              </div>
+            </div>
+
+            <InteractiveWordExplorer
+              text={result.originalText}
+              spans={result.highlightedSpans}
+            />
+          </section>
+
+          {/* Interpretation & Contextual Language Analysis */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+            <section className="lg:col-span-7 bg-[#0D1322] border border-slate-800/90 rounded-xl p-6 space-y-4">
+              <div className="pb-3 border-b border-slate-800/80">
+                <h3 className="font-display text-base font-semibold text-white">
+                  Interpretation & Explanation
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Post-classification natural-language interpretation
+                </p>
               </div>
 
-              <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <div className="space-y-3 text-sm text-slate-200 leading-relaxed">
+                <p className="font-medium text-white">{result.insights.interpretation}</p>
+                <p className="text-slate-300">{result.explanation}</p>
+              </div>
+
+              {(result.insights.positiveExpressions.length > 0 ||
+                result.insights.negativeExpressions.length > 0) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-slate-800/80 text-xs">
+                  {result.insights.positiveExpressions.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="font-medium text-emerald-400">Positive Expressions</p>
+                      <ul className="space-y-1 text-slate-300">
+                        {result.insights.positiveExpressions.map((expr, idx) => (
+                          <li key={idx}>"{expr}"</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {result.insights.negativeExpressions.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="font-medium text-rose-400">Negative Expressions</p>
+                      <ul className="space-y-1 text-slate-300">
+                        {result.insights.negativeExpressions.map((expr, idx) => (
+                          <li key={idx}>"{expr}"</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
+            {/* Sarcasm, Irony, Negation & Confidence Provenance */}
+            <section className="lg:col-span-5 bg-[#0D1322] border border-slate-800/90 rounded-xl p-6 space-y-4">
+              <div className="pb-3 border-b border-slate-800/80">
+                <h3 className="font-display text-base font-semibold text-white">
+                  Sarcasm, Context & Confidence
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Contextual markers and calibration status
+                </p>
+              </div>
+
+              <dl className="space-y-3 text-xs">
+                <div className="flex items-center justify-between gap-2 py-1 border-b border-slate-800/70">
+                  <dt className="text-slate-400">Detected Language</dt>
+                  <dd className="font-medium text-slate-100">
+                    {result.languageAnalysis.detectedLanguage}
+                  </dd>
+                </div>
+
+                <div className="py-1 border-b border-slate-800/70 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-slate-400">Sarcasm / Irony</dt>
+                    <dd
+                      className={`font-medium ${
+                        result.languageAnalysis.sarcasmOrIrony === 'Detected'
+                          ? 'text-amber-400'
+                          : 'text-slate-200'
+                      }`}
+                    >
+                      {result.languageAnalysis.sarcasmOrIrony}
+                    </dd>
+                  </div>
+                  {result.languageAnalysis.sarcasmNote && (
+                    <p className="text-slate-300 leading-relaxed">
+                      {result.languageAnalysis.sarcasmNote}
+                    </p>
+                  )}
+                </div>
+
+                <div className="py-1 border-b border-slate-800/70 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-slate-400">Negation / Double Negative</dt>
+                    <dd className="font-medium text-slate-100">
+                      {result.languageAnalysis.containsNegation ? 'Negation Present' : 'None'}
+                      {result.languageAnalysis.containsDoubleNegative ? ' · Double Negative' : ''}
+                    </dd>
+                  </div>
+                  {result.languageAnalysis.negationNote && (
+                    <p className="text-slate-300 leading-relaxed">
+                      {result.languageAnalysis.negationNote}
+                    </p>
+                  )}
+                </div>
+
+                {result.languageAnalysis.figurativeOrImplicitNote && (
+                  <div className="py-1 border-b border-slate-800/70 space-y-1">
+                    <dt className="text-slate-400">Figurative / Implicit Context</dt>
+                    <dd className="text-slate-300 leading-relaxed">
+                      {result.languageAnalysis.figurativeOrImplicitNote}
+                    </dd>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <dt className="text-slate-400">Model Confidence</dt>
+                  <dd className="font-medium text-slate-200">
+                    {result.languageAnalysis.confidenceScore !== null
+                      ? `${(result.languageAnalysis.confidenceScore * 100).toFixed(1)}%`
+                      : result.languageAnalysis.confidenceStatus}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+
+          {/* Aspect-Based Sentiment Analysis Table */}
+          <section className="bg-[#0D1322] border border-slate-800/90 rounded-xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-800/80 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="font-display text-base font-semibold text-white">
+                  Aspect-Based Sentiment Analysis
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Explicitly extracted terms separated from inferred aspect categories
+                </p>
+              </div>
+              <span className="font-mono text-xs text-slate-400 tabular-nums">
+                {result.aspects.length} aspect{result.aspects.length === 1 ? '' : 's'}
+              </span>
+            </div>
+
+            {result.aspects.length === 0 ? (
+              <div className="p-6 text-xs sm:text-sm text-slate-400">
+                No reliable target aspect identified in this statement.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium">
-                      <th className="py-2.5 px-4">Aspect Term</th>
-                      <th className="py-2.5 px-4">Category</th>
-                      <th className="py-2.5 px-4">Sample Polarity</th>
-                      <th className="py-2.5 px-4 text-right">Span Offsets</th>
+                    <tr className="bg-[#131B2E] border-b border-slate-800 text-slate-400 font-medium">
+                      <th className="py-3 px-6 whitespace-nowrap">Aspect Term</th>
+                      <th className="py-3 px-4 whitespace-nowrap">Aspect Category</th>
+                      <th className="py-3 px-4 whitespace-nowrap">Extraction Mode</th>
+                      <th className="py-3 px-4">Opinion Expression</th>
+                      <th className="py-3 px-6 whitespace-nowrap">Sentiment</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {activeSample.prediction.aspects.map((asp) => (
-                      <tr key={asp.id}>
-                        <td className="py-2.5 px-4 font-medium text-slate-900">
-                          "{asp.aspectTerm}"
+                  <tbody className="divide-y divide-slate-800/70">
+                    {result.aspects.map((asp) => (
+                      <tr key={asp.id} className="hover:bg-[#11192D]">
+                        <td className="py-3.5 px-6 font-medium text-white whitespace-nowrap">
+                          {asp.aspectTerm ? `"${asp.aspectTerm}"` : 'Implicit (No Term)'}
                         </td>
-                        <td className="py-2.5 px-4 text-slate-600">{asp.aspectCategory}</td>
-                        <td className="py-2.5 px-4">
-                          <SentimentLabel polarity={asp.polarity} />
+                        <td className="py-3.5 px-4 text-slate-300 whitespace-nowrap">
+                          {asp.aspectCategory}
                         </td>
-                        <td className="py-2.5 px-4 text-right font-mono text-slate-500 tabular-nums">
-                          {asp.startOffset}..{asp.endOffset}
+                        <td className="py-3.5 px-4 text-slate-400 whitespace-nowrap">
+                          {asp.isImplicit ? 'Inferred Category' : 'Explicit Term'}
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-200">{asp.opinionExpression}</td>
+                        <td className="py-3.5 px-6 whitespace-nowrap">
+                          <SentimentLabel polarity={asp.sentiment} />
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <p className="text-xs text-slate-500">
-                Source: {activeSample.prediction.modelIdentifier}. Confidence scores remain null
-                until a trained classifier runs inference.
-              </p>
-            </div>
+            )}
           </section>
 
-          {/* Right: Decoupled Gemini Explanation Layer */}
-          <section className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-            <div className="flex items-start gap-2.5 pb-4 border-b border-slate-100">
-              <MessageSquareText className="w-4 h-4 text-blue-700 mt-0.5 shrink-0" aria-hidden="true" />
-              <div>
-                <h4 className="font-display text-sm font-semibold text-slate-900">
-                  Layer 2: Gemini Explanation Service (Decoupled)
-                </h4>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Generates post-hoc human-readable rationales without altering classifier outputs
+          {/* Explainable AI Feedback & Export Bar */}
+          <section className="bg-[#0D1322] border border-slate-800/90 rounded-xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-0.5 text-xs">
+                <p className="font-semibold text-white">Prediction Review & Export</p>
+                <p className="text-slate-400">
+                  Flag inaccurate classifications for dataset preparation (never auto-treated as
+                  verified training labels).
                 </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={isSubmittingFeedback}
+                  onClick={() => handleSubmitFeedback(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <ThumbsUp className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Mark Accurate</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSubmittingFeedback}
+                  onClick={() => setFeedbackOpen((v) => !v)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <Flag className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Flag Incorrect</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => exportSingleStatementJson(result)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#131B2E] hover:bg-slate-800 border border-slate-800 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Export JSON</span>
+                </button>
               </div>
             </div>
 
-            <div className="text-xs text-slate-600 space-y-2 leading-relaxed">
-              <p>
-                Architectural Rule: Aspect extraction and sentiment classification are produced
-                exclusively by trained ML/DL models. The Gemini explanation service only explains
-                already-predicted aspect spans.
-              </p>
-              <p className="text-slate-500">
-                Current status: Staged interface (not connected in Phase 1).
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleRequestExplanationPreview}
-              className="w-full px-4 py-2 text-xs font-medium text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-            >
-              Inspect Explanation Service Response
-            </button>
-
-            {explanationResult && (
-              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 space-y-1.5">
-                <p className="font-medium text-slate-900">
-                  Service Status: {explanationResult.status}
-                </p>
-                <p className="leading-relaxed text-slate-600">{explanationResult.disclaimer}</p>
+            {feedbackOpen && (
+              <div className="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  value={feedbackNotes}
+                  onChange={(e) => setFeedbackNotes(e.target.value)}
+                  placeholder="Optional note: what should the sentiment, sarcasm, or aspect be?"
+                  className="flex-1 px-3 py-2 text-xs text-slate-100 bg-[#131B2E] border border-slate-700/80 rounded-lg placeholder:text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  disabled={isSubmittingFeedback}
+                  onClick={() => handleSubmitFeedback(false)}
+                  className="px-4 py-2 text-xs font-medium text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition-colors whitespace-nowrap"
+                >
+                  Submit Flag
+                </button>
               </div>
+            )}
+
+            {feedbackStatus && (
+              <p className="text-xs text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>{feedbackStatus}</span>
+              </p>
             )}
           </section>
         </div>
-      )}
-
-      {mode === 'custom' && (
-        <section className="bg-white border border-slate-200 rounded-xl p-6 max-w-3xl space-y-5">
-          <div>
-            <h3 className="font-display text-base font-semibold text-slate-900">
-              Custom Review Input & Validation Check
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Validates review input against the ABSA model adapter contract. No fabricated
-              predictions will be generated.
-            </p>
-          </div>
-
-          <form onSubmit={handleRunCustomValidation} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-slate-700">Target Domain</span>
-                <select
-                  value={customDomain}
-                  onChange={(e) => setCustomDomain(e.target.value as ReviewDomain)}
-                  className="w-full px-3 py-2 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                >
-                  <option value={ReviewDomain.Electronics}>Electronics (SemEval Laptops)</option>
-                  <option value={ReviewDomain.Restaurants}>Restaurants (SemEval Restaurants)</option>
-                </select>
-              </label>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-slate-700">Target Model Architecture</span>
-                <select
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                  className="w-full px-3 py-2 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                >
-                  {MODEL_REGISTRY_SPECS.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} (Awaiting Training)
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-slate-700">
-                Customer Review Text (8–4,000 characters)
-              </span>
-              <textarea
-                rows={4}
-                value={customText}
-                onChange={(e) => setCustomText(e.target.value)}
-                placeholder="Example: The camera autofocus is fast in daylight, but battery life drops quickly when streaming video."
-                className="w-full px-3.5 py-2.5 text-sm text-slate-900 bg-white border border-slate-300 rounded-lg placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-              />
-            </label>
-
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-xs font-mono text-slate-500 tabular-nums">
-                {customText.trim().length} / 4000 chars
-              </span>
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="px-4 py-2 text-xs font-medium text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-60 rounded-lg transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2"
-              >
-                {isSubmitting ? 'Validating...' : 'Validate & Dispatch to Adapter'}
-              </button>
-            </div>
-          </form>
-
-          {inferenceResult && (
-            <div
-              role="status"
-              className={`p-4 rounded-lg border text-xs flex items-start gap-3 ${
-                inferenceResult.errorCode === 'VALIDATION_ERROR'
-                  ? 'bg-rose-50 border-rose-200 text-rose-900'
-                  : 'bg-slate-50 border-slate-200 text-slate-800'
-              }`}
-            >
-              {inferenceResult.errorCode === 'VALIDATION_ERROR' ? (
-                <AlertCircle className="w-4 h-4 text-rose-700 mt-0.5 shrink-0" aria-hidden="true" />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 text-blue-700 mt-0.5 shrink-0" aria-hidden="true" />
-              )}
-              <div className="space-y-1">
-                <p className="font-semibold">
-                  {inferenceResult.errorCode === 'VALIDATION_ERROR'
-                    ? 'Input Validation Failed'
-                    : 'Input Passed Validation · Live Model Endpoint Not Connected'}
-                </p>
-                <p className="leading-relaxed">{inferenceResult.statusMessage}</p>
-              </div>
-            </div>
-          )}
-        </section>
       )}
     </div>
   );

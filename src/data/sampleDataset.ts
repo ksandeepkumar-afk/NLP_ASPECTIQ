@@ -1,433 +1,154 @@
-import {
-  ArchitectureComponentDoc,
-  AspectAggregateRow,
-  AspectSpanPrediction,
-  EvaluationState,
-  ModelArchitectureSpec,
-  PredictionSource,
-  ReviewDomain,
-  SampleReviewRecord,
-  SentimentPolarity,
-} from '../types/absa';
-
-function createSampleAspect(
-  reviewText: string,
-  id: string,
-  aspectTerm: string,
-  aspectCategory: string,
-  polarity: SentimentPolarity
-): AspectSpanPrediction {
-  const startOffset = reviewText.indexOf(aspectTerm);
-  return {
-    id,
-    aspectTerm,
-    aspectCategory,
-    polarity,
-    startOffset: startOffset === -1 ? 0 : startOffset,
-    endOffset: startOffset === -1 ? 0 : startOffset + aspectTerm.length,
-    confidenceScore: null,
-  };
-}
-
-function createSampleReview(params: {
-  id: string;
-  domain: ReviewDomain;
-  productOrVenue: string;
-  reviewText: string;
-  createdAt: string;
-  aspects: Array<{
-    id: string;
-    aspectTerm: string;
-    aspectCategory: string;
-    polarity: SentimentPolarity;
-  }>;
-}): SampleReviewRecord {
-  return {
-    id: params.id,
-    domain: params.domain,
-    productOrVenue: params.productOrVenue,
-    reviewText: params.reviewText,
-    createdAt: params.createdAt,
-    isSampleData: true,
-    prediction: {
-      source: PredictionSource.SamplePreview,
-      modelIdentifier: 'Sample Reference Annotation (Not Live Inference)',
-      inferenceLatencyMs: null,
-      aspects: params.aspects.map((a) =>
-        createSampleAspect(params.reviewText, a.id, a.aspectTerm, a.aspectCategory, a.polarity)
-      ),
-    },
-    explanation: {
-      source: 'GeminiExplanationLayer',
-      status: 'not_connected',
-      summary: null,
-      rationaleByAspect: [],
-      disclaimer:
-        'Gemini explanation generation is decoupled from ML predictions and will be enabled in the explanation service integration phase.',
-    },
-  };
-}
+import { EvaluationState, ModelArchitectureSpec } from '../types/absa';
 
 /**
- * SAMPLE PREVIEW DATASET
- * Every record below is static illustrative sample data modeled on SemEval-2014
- * domains (Electronics / Restaurants) to demonstrate dashboard layout and
- * aspect-span structures. These are NOT live ML model predictions.
+ * Optional unannotated example inputs for the Statement Analyzer.
+ * Zero pre-computed results are stored here; clicking an example populates
+ * the input box so live inference runs on the backend.
  */
-export const SAMPLE_REVIEWS: SampleReviewRecord[] = [
-  createSampleReview({
-    id: 'SMP-EL-101',
-    domain: ReviewDomain.Electronics,
-    productOrVenue: 'Lumina X14 Flagship Phone',
-    reviewText:
-      'The camera captures sharp low-light portraits, though battery endurance drops noticeably after 5 hours of navigation and the OLED display gets dim outdoors.',
-    createdAt: '2026-10-14',
-    aspects: [
-      {
-        id: 'asp-101-1',
-        aspectTerm: 'camera',
-        aspectCategory: 'Camera',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-101-2',
-        aspectTerm: 'battery endurance',
-        aspectCategory: 'Battery',
-        polarity: SentimentPolarity.Negative,
-      },
-      {
-        id: 'asp-101-3',
-        aspectTerm: 'OLED display',
-        aspectCategory: 'Display',
-        polarity: SentimentPolarity.Negative,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-RS-102',
-    domain: ReviewDomain.Restaurants,
-    productOrVenue: 'Bistro Marais',
-    reviewText:
-      'Food quality was consistently fresh with balanced spices, and table service remained attentive despite the Friday rush, while menu pricing felt standard for downtown.',
-    createdAt: '2026-10-15',
-    aspects: [
-      {
-        id: 'asp-102-1',
-        aspectTerm: 'Food quality',
-        aspectCategory: 'Food Quality',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-102-2',
-        aspectTerm: 'table service',
-        aspectCategory: 'Service',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-102-3',
-        aspectTerm: 'menu pricing',
-        aspectCategory: 'Pricing',
-        polarity: SentimentPolarity.Neutral,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-EL-103',
-    domain: ReviewDomain.Electronics,
-    productOrVenue: 'ZenBook Pro 14 Studio',
-    reviewText:
-      'The 120Hz display is color-accurate for editing, battery lasts through a full seminar day, and the aluminum chassis feels solid without extra weight.',
-    createdAt: '2026-10-16',
-    aspects: [
-      {
-        id: 'asp-103-1',
-        aspectTerm: '120Hz display',
-        aspectCategory: 'Display',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-103-2',
-        aspectTerm: 'battery',
-        aspectCategory: 'Battery',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-103-3',
-        aspectTerm: 'aluminum chassis',
-        aspectCategory: 'Build Quality',
-        polarity: SentimentPolarity.Positive,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-RS-104',
-    domain: ReviewDomain.Restaurants,
-    productOrVenue: 'Harbor Noodle House',
-    reviewText:
-      'Broth and handmade noodles had great texture, however slow kitchen service meant waiting forty minutes and cramped seating made conversation difficult.',
-    createdAt: '2026-10-18',
-    aspects: [
-      {
-        id: 'asp-104-1',
-        aspectTerm: 'Broth and handmade noodles',
-        aspectCategory: 'Food Quality',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-104-2',
-        aspectTerm: 'kitchen service',
-        aspectCategory: 'Service',
-        polarity: SentimentPolarity.Negative,
-      },
-      {
-        id: 'asp-104-3',
-        aspectTerm: 'seating',
-        aspectCategory: 'Ambience',
-        polarity: SentimentPolarity.Negative,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-EL-105',
-    domain: ReviewDomain.Electronics,
-    productOrVenue: 'Aperture S24 Ultra',
-    reviewText:
-      'Telephoto camera lens produces crisp zoom shots and display brightness holds up well in noon sun, though speaker clarity at max volume is average.',
-    createdAt: '2026-10-19',
-    aspects: [
-      {
-        id: 'asp-105-1',
-        aspectTerm: 'Telephoto camera lens',
-        aspectCategory: 'Camera',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-105-2',
-        aspectTerm: 'display brightness',
-        aspectCategory: 'Display',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-105-3',
-        aspectTerm: 'speaker clarity',
-        aspectCategory: 'Audio',
-        polarity: SentimentPolarity.Neutral,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-RS-106',
-    domain: ReviewDomain.Restaurants,
-    productOrVenue: 'Saffron Courtyard',
-    reviewText:
-      'Service staff greeted us promptly and dining ambience was quiet enough for discussion, yet the signature curry arrived lukewarm and dessert portions felt small.',
-    createdAt: '2026-10-20',
-    aspects: [
-      {
-        id: 'asp-106-1',
-        aspectTerm: 'Service staff',
-        aspectCategory: 'Service',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-106-2',
-        aspectTerm: 'dining ambience',
-        aspectCategory: 'Ambience',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-106-3',
-        aspectTerm: 'signature curry',
-        aspectCategory: 'Food Quality',
-        polarity: SentimentPolarity.Negative,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-EL-107',
-    domain: ReviewDomain.Electronics,
-    productOrVenue: 'Cobalt Note 12',
-    reviewText:
-      'Battery charging completes in under 40 minutes, camera night mode struggles with moving subjects, and the retail price sits in line with mid-tier rivals.',
-    createdAt: '2026-10-21',
-    aspects: [
-      {
-        id: 'asp-107-1',
-        aspectTerm: 'Battery charging',
-        aspectCategory: 'Battery',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-107-2',
-        aspectTerm: 'camera night mode',
-        aspectCategory: 'Camera',
-        polarity: SentimentPolarity.Negative,
-      },
-      {
-        id: 'asp-107-3',
-        aspectTerm: 'retail price',
-        aspectCategory: 'Pricing',
-        polarity: SentimentPolarity.Neutral,
-      },
-    ],
-  }),
-  createSampleReview({
-    id: 'SMP-RS-108',
-    domain: ReviewDomain.Restaurants,
-    productOrVenue: 'Veranda Grill',
-    reviewText:
-      'Wood-fired salmon and seasonal sides showed careful food quality, though bar service took two reminders for water refills.',
-    createdAt: '2026-10-22',
-    aspects: [
-      {
-        id: 'asp-108-1',
-        aspectTerm: 'food quality',
-        aspectCategory: 'Food Quality',
-        polarity: SentimentPolarity.Positive,
-      },
-      {
-        id: 'asp-108-2',
-        aspectTerm: 'bar service',
-        aspectCategory: 'Service',
-        polarity: SentimentPolarity.Negative,
-      },
-    ],
-  }),
+export const OPTIONAL_STATEMENT_EXAMPLES: Array<{ label: string; text: string }> = [
+  {
+    label: 'Mixed Contrast',
+    text: 'The laptop is lightweight, but its battery lasts only two hours.',
+  },
+  {
+    label: 'Sarcasm & Frustration',
+    text: 'Wow, another brilliant decision! Now everything is broken.',
+  },
+  {
+    label: 'Litotes / Negation',
+    text: 'That was not bad at all; I actually enjoyed it.',
+  },
+  {
+    label: 'Implicit Appearance',
+    text: 'She was beautiful.',
+  },
+  {
+    label: 'Polite Disagreement',
+    text: 'I appreciate your help, but I disagree with your conclusion.',
+  },
+  {
+    label: 'Factual Neutral',
+    text: 'The meeting starts at 10 AM in the conference room.',
+  },
 ];
 
 /**
- * Dynamically aggregates aspect counts from SAMPLE_REVIEWS so charts and tables
- * remain strictly consistent with the underlying sample records.
+ * Optional example conversation for the Conversation Analyzer.
  */
-export function buildSampleAspectSummary(reviews: SampleReviewRecord[]): AspectAggregateRow[] {
-  const map = new Map<string, AspectAggregateRow>();
-
-  for (const review of reviews) {
-    for (const aspect of review.prediction.aspects) {
-      const key = `${review.domain}::${aspect.aspectCategory}`;
-      const existing = map.get(key) ?? {
-        aspectCategory: aspect.aspectCategory,
-        domain: review.domain,
-        positiveCount: 0,
-        neutralCount: 0,
-        negativeCount: 0,
-        totalMentions: 0,
-      };
-
-      if (aspect.polarity === SentimentPolarity.Positive) existing.positiveCount += 1;
-      if (aspect.polarity === SentimentPolarity.Neutral) existing.neutralCount += 1;
-      if (aspect.polarity === SentimentPolarity.Negative) existing.negativeCount += 1;
-      existing.totalMentions += 1;
-
-      map.set(key, existing);
-    }
-  }
-
-  return Array.from(map.values()).sort((a, b) => b.totalMentions - a.totalMentions);
-}
+export const OPTIONAL_CONVERSATION_EXAMPLE = [
+  'Customer: My phone dies in two hours after the update.',
+  'Support: Thanks for reaching out! Have you checked background app usage?',
+  'Customer: Yes, I disabled everything, and battery backup is still disappointing.',
+  'Support: I understand how frustrating that is. Let me arrange a diagnostic replacement right away.',
+  'Customer: Thank you, I really appreciate the quick resolution.',
+].join('\n');
 
 /**
- * Candidate ML & DL ABSA model registry.
- * IMPORTANT: Evaluation metrics are explicitly `null` (AwaitingTraining) so no
- * fabricated benchmark numbers are displayed.
+ * Optional batch test set tailored for semantic search & topic clustering exploration.
  */
+export const OPTIONAL_BATCH_EXAMPLES: string[] = [
+  'My phone dies in two hours after a full charge.',
+  'Battery backup is disappointing during travel.',
+  'I have to charge it constantly before noon.',
+  'The camera captures sharp night portraits with natural skin tones.',
+  'Photo colors look crisp even in dim indoor lighting.',
+  'Customer support resolved my billing issue politely in five minutes.',
+  'Waiting forty minutes for support chat without a reply was frustrating.',
+  'Wow, another broken update that slows down the whole app.',
+];
+
+/**
+ * Small labeled SemEval-style sentiment corpus (30 real labeled sentences) used ONLY when
+ * the user explicitly runs the local TF-IDF + Logistic Regression train/test benchmark
+ * (80/20 stratified split) or uploads their own labeled CSV.
+ */
+export const SEMEVAL_STYLE_LABELED_CORPUS: Array<{ text: string; label: string }> = [
+  { text: 'The camera quality is excellent and takes crisp photos outdoors.', label: 'Positive' },
+  { text: 'Food was fresh with vibrant spices and attentive table service.', label: 'Positive' },
+  { text: 'Lightweight chassis makes this laptop effortless to carry daily.', label: 'Positive' },
+  { text: 'The display brightness and color accuracy are impressive for editing.', label: 'Positive' },
+  { text: 'Quick delivery and courteous packaging made a great first impression.', label: 'Positive' },
+  { text: 'Clear explanation and super helpful documentation throughout.', label: 'Positive' },
+  { text: 'Comfortable seating and quiet ambience suited our meeting well.', label: 'Positive' },
+  { text: 'Fast charging reaches eighty percent in twenty five minutes.', label: 'Positive' },
+  { text: 'Amazing effort from the team to resolve the outage promptly.', label: 'Positive' },
+  { text: 'Loved the crispy crust and generous fresh toppings on every slice.', label: 'Positive' },
+  { text: 'The battery drains very quickly and barely survives half a day.', label: 'Negative' },
+  { text: 'Slow kitchen service meant waiting forty five minutes for lukewarm food.', label: 'Negative' },
+  { text: 'Application crashes repeatedly whenever exporting large spreadsheets.', label: 'Negative' },
+  { text: 'Keyboard keys feel mushy and double register during fast typing.', label: 'Negative' },
+  { text: 'Overpriced menu items with tiny portions and rude staff.', label: 'Negative' },
+  { text: 'Speaker clarity distorts noticeably at medium volume.', label: 'Negative' },
+  { text: 'Another brilliant update that broke Wi-Fi connectivity completely.', label: 'Negative' },
+  { text: 'Poor customer support took four days just to acknowledge the ticket.', label: 'Negative' },
+  { text: 'Screen glare makes the monitor unusable near a sunny window.', label: 'Negative' },
+  { text: 'Heavy plastic build feels cheap and creaks when opened.', label: 'Negative' },
+  { text: 'The meeting starts at 10 AM in conference room B.', label: 'Neutral' },
+  { text: 'Package arrived on Tuesday afternoon in standard brown cardboard.', label: 'Neutral' },
+  { text: 'Available in silver and graphite with 256 GB storage.', label: 'Neutral' },
+  { text: 'The menu includes vegetarian and gluten free options.', label: 'Neutral' },
+  { text: 'Software version 2.4 was released for desktop platforms.', label: 'Neutral' },
+  { text: 'Please forward the updated schedule before Friday morning.', label: 'Neutral' },
+  { text: 'Store hours run from nine until six on weekdays.', label: 'Neutral' },
+  { text: 'The laptop weighs 1.3 kilograms and uses a USB-C charger.', label: 'Neutral' },
+  { text: 'Reservations are accepted online or by phone.', label: 'Neutral' },
+  { text: 'This model ships with a standard one year warranty.', label: 'Neutral' },
+];
+
 export const MODEL_REGISTRY_SPECS: ModelArchitectureSpec[] = [
   {
-    id: 'tfidf-svm',
-    name: 'TF-IDF + Linear SVM',
+    id: 'tfidf-logreg',
+    name: 'TF-IDF + Logistic Regression',
     family: 'Classical ML',
-    datasetTrack: 'SemEval-2014 Task 4 (Laptops & Restaurants)',
-    inputRepresentation: 'N-gram TF-IDF vectors + aspect window features',
-    purpose: 'Fast interpretable linear baseline for aspect polarity classification.',
+    datasetTrack: 'Sentiment / Comment / Aspect-Polarity Classification',
+    inputRepresentation: 'Unigram + Bigram L2-normalized TF-IDF vectors with softmax multinomial regression',
+    purpose:
+      'Interpretable linear baseline runnable directly on this server. Trains on an 80/20 stratified split and emits genuine Confusion Matrix, Accuracy, Macro-P/R/F1, and epoch loss curves.',
+    inferenceStatus: 'Active Local Trainable',
     evaluationState: EvaluationState.AwaitingTraining,
-    metrics: null,
   },
   {
-    id: 'bilstm-attention',
-    name: 'BiLSTM + Aspect Attention',
+    id: 'lstm',
+    name: 'Bidirectional LSTM',
     family: 'Deep Learning',
-    datasetTrack: 'SemEval-2014 Task 4 (Laptops & Restaurants)',
-    inputRepresentation: 'Pre-trained token embeddings + aspect-target attention pooling',
-    purpose: 'Captures sequential context and long-range opinion dependencies around aspect terms.',
+    datasetTrack: 'SemEval-2014 ABSA / Emotion / Sarcasm Classification',
+    inputRepresentation: 'Pretrained token embeddings + Bi-LSTM sequence encoder',
+    purpose:
+      'Sequential recurrent model capturing word order and negation scope. Requires Python PyTorch training runtime; no fabricated benchmark numbers are shown.',
+    inferenceStatus: 'Requires Python PyTorch Runtime',
     evaluationState: EvaluationState.AwaitingTraining,
-    metrics: null,
   },
   {
-    id: 'bert-absa',
-    name: 'BERT-Base (SPC-ABSA)',
+    id: 'attention-lstm',
+    name: 'Attention-Based LSTM (ATAE-LSTM)',
+    family: 'Deep Learning',
+    datasetTrack: 'SemEval-2014 Task 4 Aspect-Level Polarity',
+    inputRepresentation: 'Aspect-conditioned attention weights over Bi-LSTM hidden states',
+    purpose:
+      'Weights opinion tokens relative to target aspect embeddings to separate multi-aspect contrasts. Requires Python PyTorch training runtime.',
+    inferenceStatus: 'Requires Python PyTorch Runtime',
+    evaluationState: EvaluationState.AwaitingTraining,
+  },
+  {
+    id: 'bert',
+    name: 'BERT-Base / DeBERTa-v3',
     family: 'Transformer',
-    datasetTrack: 'SemEval-2014 Task 4 (Laptops & Restaurants)',
-    inputRepresentation: '[CLS] review_text [SEP] aspect_term [SEP] sentence pair encoding',
-    purpose: 'Contextualized bidirectional encoder fine-tuned on SemEval-2014 aspect-polarity pairs.',
+    datasetTrack: 'SemEval-2014 ABSA + Sarcasm + Emotion Benchmarks',
+    inputRepresentation: 'Contextual self-attention encoder with span/classification heads',
+    purpose:
+      'Fine-tuned transformer architecture for high-accuracy multi-task ABSA, sarcasm, and emotion classification. Requires Python Transformers GPU runtime.',
+    inferenceStatus: 'Requires Python PyTorch Runtime',
     evaluationState: EvaluationState.AwaitingTraining,
-    metrics: null,
   },
   {
-    id: 'deberta-v3-absa',
-    name: 'DeBERTa-v3-Base ABSA',
-    family: 'Transformer',
-    datasetTrack: 'SemEval-2014 Task 4 (Laptops & Restaurants)',
-    inputRepresentation: 'Disentangled relative position attention with joint ATE/ASC heads',
-    purpose: 'Primary neural architecture target for joint aspect extraction and polarity classification.',
+    id: 'gemini-api-internal',
+    name: 'Internal API Inference (gemini-3.1-flash-lite + gemini-embedding-2)',
+    family: 'API LLM',
+    datasetTrack: 'Live Zero-Shot Domain-Independent NLP & Embeddings',
+    inputRepresentation: 'Schema-constrained LLM generation & dense semantic embeddings',
+    purpose:
+      'Powers live statement, conversation, batch, and semantic search inference. Clearly separated from trained benchmark models and does not emit calibrated probabilities.',
+    inferenceStatus: 'Active Internal API Provider',
     evaluationState: EvaluationState.AwaitingTraining,
-    metrics: null,
-  },
-];
-
-export const ARCHITECTURE_COMPONENT_DOCS: ArchitectureComponentDoc[] = [
-  {
-    id: 'comp-ingestion',
-    title: '01. Input & CSV Validation Pipeline',
-    layer: 'Data Ingestion Layer',
-    modulePath: 'src/services/csvParser.ts',
-    implementationStatus: 'Implemented (Sample Preview)',
-    purpose:
-      'Validates individual text submissions and batch CSV files for required headers (review_text), character boundaries, encoding safety, and malformed quote structures before passing data downstream.',
-    inputs: 'Single review string or UTF-8 .csv file (max 5 MB)',
-    outputs: 'Structured ParsedCsvRow[] with row-level validation diagnostics',
-  },
-  {
-    id: 'comp-model-adapter',
-    title: '02. ABSA Model Inference Adapter',
-    layer: 'Prediction Layer (Isolated)',
-    modulePath: 'src/services/modelAdapter.ts',
-    implementationStatus: 'Interface Ready (Phase 2)',
-    purpose:
-      'Defines a strict contract for Aspect Term Extraction (ATE) and Aspect Sentiment Classification (ASC) models. Keeps predictive outputs isolated from generative LLM text so model benchmarks remain auditable.',
-    inputs: 'Validated review text + domain + target model ID',
-    outputs: 'ModelPredictionPayload (aspect spans, polarity labels, latency)',
-  },
-  {
-    id: 'comp-benchmarks',
-    title: '03. SemEval-2014 Training & Evaluation Registry',
-    layer: 'Experimentation & Metrics',
-    modulePath: 'src/components/models/ModelBenchmarksView.tsx',
-    implementationStatus: 'Interface Ready (Phase 2)',
-    purpose:
-      'Tracks classical ML (SVM) and deep learning / transformer architectures (BiLSTM, BERT, DeBERTa-v3) trained on SemEval-2014 Task 4, recording Accuracy, Precision, Recall, and Macro-F1 without fabricated defaults.',
-    inputs: 'SemEval-2014 XML/CSV training & test splits',
-    outputs: 'Verified ModelArchitectureSpec evaluation rows & confusion metrics',
-  },
-  {
-    id: 'comp-gemini-explanation',
-    title: '04. Gemini Explanation Service',
-    layer: 'Interpretability Layer (Decoupled)',
-    modulePath: 'src/services/explanationService.ts',
-    implementationStatus: 'Interface Ready (Phase 2)',
-    purpose:
-      'Provides optional post-hoc natural language rationales explaining why a review reflects positive, negative, or neutral sentiment toward specific aspects, strictly separated from classifier predictions.',
-    inputs: 'Review text + ModelPredictionPayload aspect spans',
-    outputs: 'GeminiExplanationPayload (human-readable rationale per aspect)',
-  },
-  {
-    id: 'comp-reporting',
-    title: '05. Visualization & Academic Report Exporter',
-    layer: 'Presentation & Export',
-    modulePath: 'src/services/reportExport.ts',
-    implementationStatus: 'Implemented (Sample Preview)',
-    purpose:
-      'Aggregates aspect-wise polarity distributions, renders span highlights, and exports structured JSON/CSV inspection reports clearly stamped with data provenance (Sample Preview vs. Trained Model).',
-    inputs: 'SampleReviewRecord[] or evaluated batch predictions',
-    outputs: 'AspectAggregateRow charts and downloadable JSON/CSV academic reports',
   },
 ];

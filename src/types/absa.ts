@@ -1,25 +1,22 @@
 /**
- * Core domain types for AspectIQ — Aspect-Based Sentiment Intelligence System.
- * Strictly decouples ML/DL model prediction outputs from Gemini-generated
- * natural language explanations and distinguishes sample preview data from
- * live model evaluations.
+ * AspectIQ 2.0 — Core Frontend Domain Types
+ * Covers Statement Analyzer, Interactive Word Explorer, Conversation Analyzer,
+ * Batch Intelligence, Semantic Search & Topic Discovery, Analytics, History,
+ * Explainable AI Feedback, and Model Comparison.
  */
 
-export enum SentimentPolarity {
-  Positive = 'Positive',
-  Negative = 'Negative',
-  Neutral = 'Neutral',
-}
+export type OverallSentiment = 'Positive' | 'Negative' | 'Neutral' | 'Mixed';
+export type AspectSentiment = 'Positive' | 'Negative' | 'Neutral';
+export type SarcasmStatus = 'Detected' | 'Uncertain' | 'Not Detected';
+export type UncertaintyLevel = 'Low' | 'Moderate' | 'High';
 
-export enum ReviewDomain {
-  Electronics = 'Electronics',
-  Restaurants = 'Restaurants',
-}
-
-export enum PredictionSource {
-  SamplePreview = 'SamplePreview',
-  TrainedModel = 'TrainedModel',
-}
+export type SpanHighlightCategory =
+  | 'positive_expression'
+  | 'negative_expression'
+  | 'sarcastic_expression'
+  | 'aspect'
+  | 'negation'
+  | 'emotional_expression';
 
 export enum EvaluationState {
   AwaitingTraining = 'AwaitingTraining',
@@ -28,105 +25,303 @@ export enum EvaluationState {
 }
 
 export enum DashboardSection {
-  Overview = 'overview',
   Workbench = 'workbench',
-  CsvIngestion = 'ingestion',
+  BatchIngestion = 'batch',
+  Conversation = 'conversation',
   Benchmarks = 'benchmarks',
-  Architecture = 'architecture',
+  Analytics = 'analytics',
+  History = 'history',
 }
 
-export interface AspectSpanPrediction {
+export interface ExplorerSpan {
   id: string;
-  aspectTerm: string;
-  aspectCategory: string;
-  polarity: SentimentPolarity;
+  phrase: string;
+  category: SpanHighlightCategory;
+  classification: string;
+  associatedAspect: string | null;
+  explanation: string;
+  attributionSource: 'Verified Span Match' | 'Model Attribution';
   startOffset: number;
   endOffset: number;
-  /** Model probability score (0–1). Only populated by real model inference or clearly marked sample preview. */
-  confidenceScore: number | null;
 }
 
-export interface ModelPredictionPayload {
-  source: PredictionSource;
-  modelIdentifier: string;
-  aspects: AspectSpanPrediction[];
-  inferenceLatencyMs: number | null;
+export interface AnalyzedAspectOutput {
+  id: string;
+  aspectTerm: string | null;
+  aspectCategory: string;
+  isImplicit: boolean;
+  opinionExpression: string;
+  sentiment: AspectSentiment;
+  startOffset: number;
+  endOffset: number;
 }
 
-export interface GeminiExplanationPayload {
-  source: 'GeminiExplanationLayer';
-  status: 'not_connected' | 'idle' | 'ready' | 'error';
-  summary: string | null;
-  rationaleByAspect: Array<{
-    aspectTerm: string;
-    reasoning: string;
+export interface StatementAnalysisOutput {
+  analysisId?: string;
+  statementId: string;
+  speaker?: string | null;
+  timestamp?: string | null;
+  originalText: string;
+  overallSentiment: OverallSentiment;
+  uncertaintyLevel: UncertaintyLevel;
+  uncertaintyReason: string | null;
+  explanation: string;
+  commentTypes: string[];
+  tone: string;
+  emotion: string;
+  primaryEmotion: string | null;
+  communicationIntent: string;
+  aspects: AnalyzedAspectOutput[];
+  highlightedSpans: ExplorerSpan[];
+  languageAnalysis: {
+    detectedLanguage: string;
+    sarcasmOrIrony: SarcasmStatus;
+    sarcasmNote: string | null;
+    containsNegation: boolean;
+    containsDoubleNegative: boolean;
+    negationNote: string | null;
+    figurativeOrImplicitNote: string | null;
+    confidenceScore: number | null;
+    confidenceStatus: string;
+  };
+  insights: {
+    interpretation: string;
+    positiveExpressions: string[];
+    negativeExpressions: string[];
+    ambiguityNote: string | null;
+  };
+}
+
+export interface SingleAnalyzeResponse {
+  ok: boolean;
+  analysisId?: string;
+  providerName?: string;
+  isApiBased?: boolean;
+  processingTimeMs?: number;
+  result?: StatementAnalysisOutput;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface RawStatementInputRow {
+  rowNumber: number;
+  statementId: string;
+  speaker: string | null;
+  timestamp: string | null;
+  text: string;
+  isValid: boolean;
+  isDuplicate: boolean;
+  validationError: string | null;
+}
+
+export interface ParsedCsvDocument {
+  fileName: string;
+  fileSizeBytes: number;
+  headers: string[];
+  rawRows: string[][];
+  autoDetectedColumn: string | null;
+  selectedColumn: string | null;
+  idColumn: string | null;
+  speakerColumn: string | null;
+  timestampColumn: string | null;
+  fatalError: string | null;
+}
+
+export interface CsvDatasetPreview {
+  fileName: string;
+  fileSizeBytes: number;
+  headers: string[];
+  selectedColumn: string | null;
+  speakerColumn: string | null;
+  timestampColumn: string | null;
+  autoDetected: boolean;
+  totalRows: number;
+  validRows: number;
+  duplicateRows: number;
+  invalidRows: number;
+  rows: RawStatementInputRow[];
+  fatalError: string | null;
+}
+
+export interface LabelCountEntry {
+  label: string;
+  count: number;
+}
+
+export interface AspectSummaryEntry {
+  aspectCategory: string;
+  positiveCount: number;
+  negativeCount: number;
+  neutralCount: number;
+  totalMentions: number;
+}
+
+export interface BatchRowError {
+  statementId: string;
+  text: string;
+  error: string;
+}
+
+export interface BatchAnalysisResult {
+  ok: boolean;
+  datasetId: string;
+  datasetName: string;
+  inputMethod: 'csv_upload' | 'manual_batch';
+  providerName: string;
+  isApiBased: boolean;
+  analyzedAt: string;
+  totalSubmitted: number;
+  failedCount: number;
+  failedRows: BatchRowError[];
+  skippedCount: number;
+  processingTimeMs: number;
+  totalStatementsAnalyzed: number;
+  totalAspectsExtracted: number;
+  sentimentCounts: Record<OverallSentiment, number>;
+  sarcasmDetectedCount: number;
+  negationCount: number;
+  commentTypeSummary: LabelCountEntry[];
+  toneSummary: LabelCountEntry[];
+  emotionSummary: LabelCountEntry[];
+  intentSummary: LabelCountEntry[];
+  aspectSummary: AspectSummaryEntry[];
+  mostPositiveAspects: AspectSummaryEntry[];
+  mostNegativeAspects: AspectSummaryEntry[];
+  results: StatementAnalysisOutput[];
+}
+
+export interface ConversationMessageInput {
+  messageId: string;
+  speaker: string | null;
+  timestamp: string | null;
+  text: string;
+}
+
+export interface ConversationMessageAnalysis {
+  messageId: string;
+  index: number;
+  speaker: string | null;
+  timestamp: string | null;
+  text: string;
+  sentiment: OverallSentiment;
+  sentimentTrendScore: number;
+  commentTypes: string[];
+  tone: string;
+  emotion: string;
+  communicationIntent: string;
+  aspects: AnalyzedAspectOutput[];
+  sarcasmOrIrony: SarcasmStatus;
+  explanation: string;
+}
+
+export interface ConversationAnalysisResult {
+  conversationId: string;
+  title: string;
+  analyzedAt: string;
+  totalMessages: number;
+  hasExplicitSpeakers: boolean;
+  providerName: string;
+  isApiBased: boolean;
+  processingTimeMs: number;
+  overallSummary: string;
+  sentimentTrendSummary: string;
+  emotionalToneShifts: string[];
+  repeatedTopics: Array<{
+    topic: string;
+    mentionCount: number;
+    dominantSentiment: OverallSentiment;
   }>;
+  mainPositiveSubjects: string[];
+  mainNegativeSubjects: string[];
+  disagreementPoints: string[];
+  disclaimer: string;
+  messages: ConversationMessageAnalysis[];
+}
+
+export interface SemanticSearchMatch {
+  statementId: string;
+  text: string;
+  overallSentiment: OverallSentiment;
+  similarityScore: number;
+}
+
+export interface TopicClusterResult {
+  clusterId: string;
+  approximateLabel: string;
+  statementCount: number;
+  representativeExamples: Array<{
+    statementId: string;
+    text: string;
+    overallSentiment: OverallSentiment;
+  }>;
+  sentimentDistribution: Record<OverallSentiment, number>;
   disclaimer: string;
 }
 
-export interface SampleReviewRecord {
+export interface HistorySummaryRecord {
   id: string;
-  domain: ReviewDomain;
-  productOrVenue: string;
-  reviewText: string;
   createdAt: string;
-  isSampleData: true;
-  prediction: ModelPredictionPayload;
-  explanation: GeminiExplanationPayload;
+  sourceType: 'statement' | 'batch' | 'conversation';
+  inputPreview: string;
+  overallSentiment: OverallSentiment;
+  commentTypes: string[];
+  mainAspects: string[];
+  status: 'Completed' | 'Failed';
 }
 
-export interface AspectAggregateRow {
-  aspectCategory: string;
-  domain: ReviewDomain;
-  positiveCount: number;
-  neutralCount: number;
-  negativeCount: number;
-  totalMentions: number;
+export interface PredictionFeedbackRecord {
+  id: string;
+  createdAt: string;
+  analysisId: string;
+  inputText: string;
+  predictedSentiment: string;
+  isCorrect: boolean;
+  reportedIssue: string | null;
+  notes: string | null;
+}
+
+export interface StoredEvaluationRecord {
+  id: string;
+  createdAt: string;
+  modelId: string;
+  modelName: string;
+  datasetName: string;
+  datasetSize: number;
+  trainSize: number;
+  testSize: number;
+  trainingTimeMs: number;
+  inferenceTimeMs: number;
+  accuracy: number;
+  precisionMacro: number;
+  recallMacro: number;
+  f1Macro: number;
+  labels: string[];
+  confusionMatrix: number[][];
+  lossHistory: Array<{ epoch: number; trainLoss: number; valLoss: number }>;
+  notes: string;
+}
+
+export interface StoredBatchSummary {
+  batchId: string;
+  createdAt: string;
+  datasetName: string;
+  inputMethod: string;
+  totalRecords: number;
+  successCount: number;
+  failedCount: number;
+  payload: BatchAnalysisResult;
 }
 
 export interface ModelArchitectureSpec {
   id: string;
   name: string;
-  family: 'Classical ML' | 'Deep Learning' | 'Transformer';
-  datasetTrack: 'SemEval-2014 Task 4 (Laptops & Restaurants)';
+  family: 'Classical ML' | 'Deep Learning' | 'Transformer' | 'API LLM';
+  datasetTrack: string;
   inputRepresentation: string;
   purpose: string;
+  inferenceStatus:
+    | 'Active Local Trainable'
+    | 'Active Internal API Provider'
+    | 'Requires Python PyTorch Runtime';
   evaluationState: EvaluationState;
-  metrics: {
-    accuracy: number;
-    precision: number;
-    recall: number;
-    f1Score: number;
-  } | null;
-}
-
-export interface ParsedCsvRow {
-  rowNumber: number;
-  reviewId: string;
-  domain: string;
-  reviewText: string;
-  isValid: boolean;
-  validationError: string | null;
-}
-
-export interface CsvValidationSummary {
-  fileName: string;
-  fileSizeBytes: number;
-  totalRows: number;
-  validRows: number;
-  invalidRows: number;
-  detectedColumns: string[];
-  rows: ParsedCsvRow[];
-  fatalError: string | null;
-}
-
-export interface ArchitectureComponentDoc {
-  id: string;
-  title: string;
-  layer: string;
-  modulePath: string;
-  implementationStatus: 'Implemented (Sample Preview)' | 'Interface Ready (Phase 2)';
-  purpose: string;
-  inputs: string;
-  outputs: string;
 }

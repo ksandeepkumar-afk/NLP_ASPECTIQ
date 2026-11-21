@@ -1,54 +1,108 @@
-import { CsvValidationSummary, ParsedCsvRow } from '../types/absa';
+import {
+  ConversationMessageInput,
+  CsvDatasetPreview,
+  ParsedCsvDocument,
+  RawStatementInputRow,
+} from '../types/absa';
 
-const MAX_CSV_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB safety limit
-const MIN_REVIEW_LENGTH = 8;
-const MAX_REVIEW_LENGTH = 4000;
+const MAX_CSV_FILE_SIZE_BYTES = 5 * 1024 * 1024;
+export const MIN_STATEMENT_LENGTH = 2;
+export const MAX_STATEMENT_LENGTH = 4000;
 
-/**
- * Splits a single CSV line respecting RFC-4180 double-quoted fields and escaped quotes.
- */
-function parseCsvLine(line: string): string[] {
-  const fields: string[] = [];
-  let current = '';
+const COMMON_TEXT_COLUMN_NAMES = [
+  'statement',
+  'statements',
+  'text',
+  'comment',
+  'comments',
+  'message',
+  'messages',
+  'review_text',
+  'reviewtext',
+  'review',
+  'reviews',
+  'feedback',
+  'sentence',
+  'content',
+  'body',
+];
+
+const COMMON_ID_COLUMN_NAMES = ['statement_id', 'message_id', 'review_id', 'id', 'row_id'];
+const COMMON_SPEAKER_COLUMN_NAMES = ['speaker', 'author', 'user', 'sender', 'role', 'name'];
+const COMMON_TIMESTAMP_COLUMN_NAMES = ['timestamp', 'date', 'created_at', 'time', 'datetime'];
+
+function parseCsvMatrix(rawText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentField = '';
   let inQuotes = false;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    const nextChar = line[i + 1];
+  const text = rawText.replace(/^\uFEFF/, '');
 
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        current += '"';
-        i += 1;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (nextChar === '"') {
+          currentField += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
       } else {
-        inQuotes = !inQuotes;
+        currentField += char;
       }
-    } else if (char === ',' && !inQuotes) {
-      fields.push(current.trim());
-      current = '';
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      currentRow.push(currentField.trim());
+      currentField = '';
+    } else if (char === '\r' && nextChar === '\n') {
+      currentRow.push(currentField.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentField = '';
+      i += 1;
+    } else if (char === '\n' || char === '\r') {
+      currentRow.push(currentField.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentField = '';
     } else {
-      current += char;
+      currentField += char;
     }
   }
 
-  fields.push(current.trim());
-  return fields;
+  currentRow.push(currentField.trim());
+  if (currentRow.some((cell) => cell.length > 0)) {
+    rows.push(currentRow);
+  }
+
+  return rows;
 }
 
-/**
- * Validates and parses an uploaded CSV file for batch review ingestion.
- * Requires a `review_text` (or `text` / `review`) column header.
- */
-export async function validateAndParseCsvFile(file: File): Promise<CsvValidationSummary> {
+function normalizeHeaderName(header: string): string {
+  return header.trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+export async function parseCsvFileToDocument(file: File): Promise<ParsedCsvDocument> {
   if (!file.name.toLowerCase().endsWith('.csv')) {
     return {
       fileName: file.name,
       fileSizeBytes: file.size,
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      detectedColumns: [],
-      rows: [],
+      headers: [],
+      rawRows: [],
+      autoDetectedColumn: null,
+      selectedColumn: null,
+      idColumn: null,
+      speakerColumn: null,
+      timestampColumn: null,
       fatalError: 'Unsupported file format. Please upload a UTF-8 .csv file.',
     };
   }
@@ -57,11 +111,13 @@ export async function validateAndParseCsvFile(file: File): Promise<CsvValidation
     return {
       fileName: file.name,
       fileSizeBytes: file.size,
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      detectedColumns: [],
-      rows: [],
+      headers: [],
+      rawRows: [],
+      autoDetectedColumn: null,
+      selectedColumn: null,
+      idColumn: null,
+      speakerColumn: null,
+      timestampColumn: null,
       fatalError: 'The uploaded CSV file is empty.',
     };
   }
@@ -70,127 +126,355 @@ export async function validateAndParseCsvFile(file: File): Promise<CsvValidation
     return {
       fileName: file.name,
       fileSizeBytes: file.size,
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      detectedColumns: [],
-      rows: [],
-      fatalError: 'File exceeds the 5 MB ingestion limit. Split large datasets into smaller batches.',
+      headers: [],
+      rawRows: [],
+      autoDetectedColumn: null,
+      selectedColumn: null,
+      idColumn: null,
+      speakerColumn: null,
+      timestampColumn: null,
+      fatalError: 'File exceeds the 5 MB ingestion limit.',
     };
   }
 
   const rawText = await file.text();
-  const normalizedLines = rawText
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .filter((line) => line.trim().length > 0);
+  const matrix = parseCsvMatrix(rawText);
 
-  if (normalizedLines.length < 2) {
+  if (matrix.length < 2) {
     return {
       fileName: file.name,
       fileSizeBytes: file.size,
-      totalRows: 0,
-      validRows: 0,
-      invalidRows: 0,
-      detectedColumns: [],
-      rows: [],
-      fatalError: 'CSV must include a header row and at least one review record.',
+      headers: matrix[0] ?? [],
+      rawRows: [],
+      autoDetectedColumn: null,
+      selectedColumn: null,
+      idColumn: null,
+      speakerColumn: null,
+      timestampColumn: null,
+      fatalError: 'CSV must include a header row and at least one data record.',
     };
   }
 
-  const headerFields = parseCsvLine(normalizedLines[0]).map((col) =>
-    col.toLowerCase().replace(/\s+/g, '_')
-  );
+  const rawHeaders = matrix[0].map((h, idx) => (h.trim() ? h.trim() : `column_${idx + 1}`));
+  const normalizedHeaders = rawHeaders.map(normalizeHeaderName);
+  const dataRows = matrix.slice(1);
 
-  const textColIndex = headerFields.findIndex((col) =>
-    ['review_text', 'text', 'review', 'sentence'].includes(col)
-  );
+  const autoTextIdx = normalizedHeaders.findIndex((h) => COMMON_TEXT_COLUMN_NAMES.includes(h));
+  const idIdx = normalizedHeaders.findIndex((h) => COMMON_ID_COLUMN_NAMES.includes(h));
+  const speakerIdx = normalizedHeaders.findIndex((h) => COMMON_SPEAKER_COLUMN_NAMES.includes(h));
+  const timeIdx = normalizedHeaders.findIndex((h) => COMMON_TIMESTAMP_COLUMN_NAMES.includes(h));
 
+  const autoDetectedColumn = autoTextIdx !== -1 ? rawHeaders[autoTextIdx] : null;
+
+  return {
+    fileName: file.name,
+    fileSizeBytes: file.size,
+    headers: rawHeaders,
+    rawRows: dataRows,
+    autoDetectedColumn,
+    selectedColumn: autoDetectedColumn,
+    idColumn: idIdx !== -1 ? rawHeaders[idIdx] : null,
+    speakerColumn: speakerIdx !== -1 ? rawHeaders[speakerIdx] : null,
+    timestampColumn: timeIdx !== -1 ? rawHeaders[timeIdx] : null,
+    fatalError: null,
+  };
+}
+
+export function buildCsvDatasetPreview(
+  doc: ParsedCsvDocument,
+  chosenTextColumn: string | null,
+  chosenSpeakerColumn?: string | null,
+  chosenTimestampColumn?: string | null
+): CsvDatasetPreview {
+  const speakerCol = chosenSpeakerColumn !== undefined ? chosenSpeakerColumn : doc.speakerColumn;
+  const timeCol = chosenTimestampColumn !== undefined ? chosenTimestampColumn : doc.timestampColumn;
+
+  if (doc.fatalError) {
+    return {
+      fileName: doc.fileName,
+      fileSizeBytes: doc.fileSizeBytes,
+      headers: doc.headers,
+      selectedColumn: null,
+      speakerColumn: null,
+      timestampColumn: null,
+      autoDetected: false,
+      totalRows: 0,
+      validRows: 0,
+      duplicateRows: 0,
+      invalidRows: 0,
+      rows: [],
+      fatalError: doc.fatalError,
+    };
+  }
+
+  if (!chosenTextColumn) {
+    return {
+      fileName: doc.fileName,
+      fileSizeBytes: doc.fileSizeBytes,
+      headers: doc.headers,
+      selectedColumn: null,
+      speakerColumn: speakerCol,
+      timestampColumn: timeCol,
+      autoDetected: false,
+      totalRows: doc.rawRows.length,
+      validRows: 0,
+      duplicateRows: 0,
+      invalidRows: 0,
+      rows: [],
+      fatalError: null,
+    };
+  }
+
+  const textColIndex = doc.headers.indexOf(chosenTextColumn);
   if (textColIndex === -1) {
     return {
-      fileName: file.name,
-      fileSizeBytes: file.size,
-      totalRows: 0,
+      fileName: doc.fileName,
+      fileSizeBytes: doc.fileSizeBytes,
+      headers: doc.headers,
+      selectedColumn: null,
+      speakerColumn: speakerCol,
+      timestampColumn: timeCol,
+      autoDetected: false,
+      totalRows: doc.rawRows.length,
       validRows: 0,
+      duplicateRows: 0,
       invalidRows: 0,
-      detectedColumns: headerFields,
       rows: [],
-      fatalError:
-        'Missing required review text column. Expected header: "review_text", "text", or "review".',
+      fatalError: `Selected column "${chosenTextColumn}" was not found in CSV headers.`,
     };
   }
 
-  const idColIndex = headerFields.findIndex((col) => ['id', 'review_id'].includes(col));
-  const domainColIndex = headerFields.findIndex((col) =>
-    ['domain', 'category', 'dataset'].includes(col)
-  );
+  const idColIndex = doc.idColumn ? doc.headers.indexOf(doc.idColumn) : -1;
+  const speakerColIndex = speakerCol ? doc.headers.indexOf(speakerCol) : -1;
+  const timeColIndex = timeCol ? doc.headers.indexOf(timeCol) : -1;
 
-  const parsedRows: ParsedCsvRow[] = [];
+  const seenNormalized = new Map<string, number>();
+  const rows: RawStatementInputRow[] = [];
   let validCount = 0;
+  let duplicateCount = 0;
   let invalidCount = 0;
 
-  for (let i = 1; i < normalizedLines.length; i += 1) {
-    const values = parseCsvLine(normalizedLines[i]);
-    const reviewText = (values[textColIndex] ?? '').trim();
-    const reviewId =
-      idColIndex !== -1 && values[idColIndex] ? values[idColIndex] : `ROW-${String(i).padStart(3, '0')}`;
-    const domain =
-      domainColIndex !== -1 && values[domainColIndex] ? values[domainColIndex] : 'Unspecified';
+  for (let i = 0; i < doc.rawRows.length; i += 1) {
+    const values = doc.rawRows[i];
+    const rowNumber = i + 1;
+    const text = (values[textColIndex] ?? '').trim();
+    const statementId =
+      idColIndex !== -1 && values[idColIndex]
+        ? values[idColIndex].trim()
+        : `ROW-${String(rowNumber).padStart(3, '0')}`;
+    const speaker =
+      speakerColIndex !== -1 && values[speakerColIndex]
+        ? values[speakerColIndex].trim() || null
+        : null;
+    const timestamp =
+      timeColIndex !== -1 && values[timeColIndex]
+        ? values[timeColIndex].trim() || null
+        : null;
 
     let validationError: string | null = null;
-    if (!reviewText) {
-      validationError = 'Empty review text.';
-    } else if (reviewText.length < MIN_REVIEW_LENGTH) {
-      validationError = `Review shorter than ${MIN_REVIEW_LENGTH} characters.`;
-    } else if (reviewText.length > MAX_REVIEW_LENGTH) {
-      validationError = `Review exceeds ${MAX_REVIEW_LENGTH} character limit.`;
+    let isDuplicate = false;
+
+    if (!text) {
+      validationError = 'Missing or empty text.';
+    } else if (text.length < MIN_STATEMENT_LENGTH) {
+      validationError = `Too short (< ${MIN_STATEMENT_LENGTH} chars).`;
+    } else if (text.length > MAX_STATEMENT_LENGTH) {
+      validationError = `Exceeds ${MAX_STATEMENT_LENGTH} chars.`;
+    } else {
+      const normalizedKey = text.toLowerCase().replace(/\s+/g, ' ');
+      const firstSeenRow = seenNormalized.get(normalizedKey);
+      if (firstSeenRow !== undefined) {
+        isDuplicate = true;
+        validationError = `Duplicate of row ${firstSeenRow}.`;
+      } else {
+        seenNormalized.set(normalizedKey, rowNumber);
+      }
     }
 
     const isValid = validationError === null;
-    if (isValid) {
-      validCount += 1;
-    } else {
-      invalidCount += 1;
-    }
+    if (isValid) validCount += 1;
+    else if (isDuplicate) duplicateCount += 1;
+    else invalidCount += 1;
 
-    parsedRows.push({
-      rowNumber: i,
-      reviewId,
-      domain,
-      reviewText,
+    rows.push({
+      rowNumber,
+      statementId,
+      speaker,
+      timestamp,
+      text,
       isValid,
+      isDuplicate,
       validationError,
     });
   }
 
   return {
-    fileName: file.name,
-    fileSizeBytes: file.size,
-    totalRows: parsedRows.length,
+    fileName: doc.fileName,
+    fileSizeBytes: doc.fileSizeBytes,
+    headers: doc.headers,
+    selectedColumn: chosenTextColumn,
+    speakerColumn: speakerCol,
+    timestampColumn: timeCol,
+    autoDetected: chosenTextColumn === doc.autoDetectedColumn,
+    totalRows: rows.length,
     validRows: validCount,
+    duplicateRows: duplicateCount,
     invalidRows: invalidCount,
-    detectedColumns: headerFields,
-    rows: parsedRows,
+    rows,
     fatalError: null,
   };
 }
 
-export function validateSingleReviewInput(text: string): { valid: boolean; error: string | null } {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    return { valid: false, error: 'Enter a customer review before submitting.' };
+export function parseManualBatchInput(rawText: string): {
+  rows: RawStatementInputRow[];
+  validCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+} {
+  const candidates = rawText
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const seen = new Map<string, number>();
+  const rows: RawStatementInputRow[] = [];
+  let validCount = 0;
+  let duplicateCount = 0;
+  let invalidCount = 0;
+
+  for (let i = 0; i < candidates.length; i += 1) {
+    const text = candidates[i];
+    const rowNumber = i + 1;
+    let validationError: string | null = null;
+    let isDuplicate = false;
+
+    if (text.length < MIN_STATEMENT_LENGTH) {
+      validationError = `Shorter than ${MIN_STATEMENT_LENGTH} characters.`;
+    } else if (text.length > MAX_STATEMENT_LENGTH) {
+      validationError = `Exceeds ${MAX_STATEMENT_LENGTH} characters.`;
+    } else {
+      const norm = text.toLowerCase().replace(/\s+/g, ' ');
+      const firstRow = seen.get(norm);
+      if (firstRow !== undefined) {
+        isDuplicate = true;
+        validationError = `Duplicate of line #${firstRow}.`;
+      } else {
+        seen.set(norm, rowNumber);
+      }
+    }
+
+    const isValid = validationError === null;
+    if (isValid) validCount += 1;
+    else if (isDuplicate) duplicateCount += 1;
+    else invalidCount += 1;
+
+    rows.push({
+      rowNumber,
+      statementId: `MAN-${String(rowNumber).padStart(3, '0')}`,
+      speaker: null,
+      timestamp: null,
+      text,
+      isValid,
+      isDuplicate,
+      validationError,
+    });
   }
-  if (trimmed.length < MIN_REVIEW_LENGTH) {
+
+  return { rows, validCount, duplicateCount, invalidCount };
+}
+
+/**
+ * Parses pasted chronological conversation lines.
+ * Supports optional "Speaker: Message" format without inventing speakers when absent.
+ */
+export function parsePastedConversation(rawText: string): ConversationMessageInput[] {
+  const lines = rawText
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length >= MIN_STATEMENT_LENGTH);
+
+  return lines.map((line, idx) => {
+    const colonMatch = line.match(/^([A-Za-z][A-Za-z0-9 _.-]{0,30}):\s+(.+)$/);
+    if (colonMatch) {
+      return {
+        messageId: `MSG-${String(idx + 1).padStart(3, '0')}`,
+        speaker: colonMatch[1].trim(),
+        timestamp: null,
+        text: colonMatch[2].trim(),
+      };
+    }
     return {
-      valid: false,
-      error: `Review text must be at least ${MIN_REVIEW_LENGTH} characters for meaningful aspect extraction.`,
+      messageId: `MSG-${String(idx + 1).padStart(3, '0')}`,
+      speaker: null,
+      timestamp: null,
+      text: line,
+    };
+  });
+}
+
+/**
+ * Parses a labeled CSV file containing text + label columns for Model Comparison evaluation.
+ */
+export async function parseLabeledEvaluationCsv(
+  file: File
+): Promise<{ samples: Array<{ text: string; label: string }>; error: string | null }> {
+  const doc = await parseCsvFileToDocument(file);
+  if (doc.fatalError) {
+    return { samples: [], error: doc.fatalError };
+  }
+  const normalized = doc.headers.map(normalizeHeaderName);
+  const textIdx = normalized.findIndex((h) => COMMON_TEXT_COLUMN_NAMES.includes(h));
+  const labelIdx = normalized.findIndex((h) =>
+    ['label', 'sentiment', 'polarity', 'class', 'target', 'category'].includes(h)
+  );
+  if (textIdx === -1 || labelIdx === -1) {
+    return {
+      samples: [],
+      error:
+        'Labeled CSV must contain a text column (e.g. text/statement/review) and a label column (e.g. label/sentiment).',
     };
   }
-  if (trimmed.length > MAX_REVIEW_LENGTH) {
+
+  const samples = doc.rawRows
+    .map((r) => ({
+      text: (r[textIdx] ?? '').trim(),
+      label: (r[labelIdx] ?? '').trim(),
+    }))
+    .filter((s) => s.text.length >= MIN_STATEMENT_LENGTH && s.label.length > 0);
+
+  if (samples.length < 10) {
+    return {
+      samples: [],
+      error: 'At least 10 valid labeled rows are required for train/test evaluation.',
+    };
+  }
+
+  return { samples, error: null };
+}
+
+export function validateSingleStatementInput(text: string): {
+  valid: boolean;
+  error: string | null;
+} {
+  const trimmed = text.trim();
+  if (!trimmed) {
     return {
       valid: false,
-      error: `Review text exceeds the maximum allowed length of ${MAX_REVIEW_LENGTH} characters.`,
+      error: 'Enter a sentence, comment, review, or statement to analyze.',
+    };
+  }
+  if (trimmed.length < MIN_STATEMENT_LENGTH) {
+    return {
+      valid: false,
+      error: `Statement must be at least ${MIN_STATEMENT_LENGTH} characters long.`,
+    };
+  }
+  if (trimmed.length > MAX_STATEMENT_LENGTH) {
+    return {
+      valid: false,
+      error: `Statement exceeds the maximum allowed length of ${MAX_STATEMENT_LENGTH} characters.`,
     };
   }
   return { valid: true, error: null };

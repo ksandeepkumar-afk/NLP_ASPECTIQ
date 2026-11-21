@@ -1,5 +1,9 @@
-import { SampleReviewRecord } from '../types/absa';
-import { buildSampleAspectSummary } from '../data/sampleDataset';
+import {
+  BatchAnalysisResult,
+  BatchRowError,
+  ConversationAnalysisResult,
+  StatementAnalysisOutput,
+} from '../types/absa';
 
 function triggerDownload(filename: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
@@ -13,57 +17,191 @@ function triggerDownload(filename: string, content: string, mimeType: string): v
   URL.revokeObjectURL(url);
 }
 
-/**
- * Exports a structured academic inspection JSON report of the sample dataset.
- * Explicitly labels all records as Sample Preview Data so it cannot be mistaken
- * for trained SemEval-2014 evaluation output.
- */
-export function exportSampleJsonReport(reviews: SampleReviewRecord[]): void {
-  const aspectSummary = buildSampleAspectSummary(reviews);
-  const payload = {
-    reportTitle: 'AspectIQ — Sample Dataset Inspection Report',
-    dataProvenance: 'SAMPLE_PREVIEW_DATA_NOT_TRAINED_MODEL_OUTPUT',
-    generatedAt: new Date().toISOString(),
-    notes: [
-      'All reviews and aspect annotations in this export are illustrative sample data.',
-      'No ML/DL model training or SemEval-2014 benchmark evaluation has been executed yet.',
-    ],
-    sampleSummary: {
-      totalSampleReviews: reviews.length,
-      totalSampleAspectMentions: aspectSummary.reduce((sum, row) => sum + row.totalMentions, 0),
-      aspectBreakdown: aspectSummary,
-    },
-    records: reviews.map((r) => ({
-      id: r.id,
-      domain: r.domain,
-      productOrVenue: r.productOrVenue,
-      isSampleData: r.isSampleData,
-      reviewText: r.reviewText,
-      sampleAspects: r.prediction.aspects.map((a) => ({
-        aspectTerm: a.aspectTerm,
-        aspectCategory: a.aspectCategory,
-        polarity: a.polarity,
-      })),
-    })),
-  };
+function escapeCsvCell(value: string | number | boolean | null | undefined): string {
+  const str = value === null || value === undefined ? '' : String(value);
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+function sanitizeFileSlug(name: string): string {
+  return (
+    name
+      .replace(/\.csv$/i, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'report'
+  );
+}
+
+export function exportPredictionsCsv(batch: BatchAnalysisResult): void {
+  const headers = [
+    'statement_id',
+    'speaker',
+    'timestamp',
+    'original_statement',
+    'overall_sentiment',
+    'uncertainty_level',
+    'comment_types',
+    'tone',
+    'emotion',
+    'communication_intent',
+    'sarcasm_or_irony',
+    'contains_negation',
+    'aspect_term',
+    'aspect_category',
+    'aspect_type',
+    'opinion_expression',
+    'aspect_sentiment',
+    'interpretation',
+  ];
+
+  const csvLines: string[] = [headers.join(',')];
+
+  for (const stmt of batch.results) {
+    if (stmt.aspects.length === 0) {
+      csvLines.push(
+        [
+          stmt.statementId,
+          stmt.speaker ?? '',
+          stmt.timestamp ?? '',
+          stmt.originalText,
+          stmt.overallSentiment,
+          stmt.uncertaintyLevel,
+          stmt.commentTypes.join('; '),
+          stmt.tone,
+          stmt.emotion,
+          stmt.communicationIntent,
+          stmt.languageAnalysis.sarcasmOrIrony,
+          stmt.languageAnalysis.containsNegation ? 'Yes' : 'No',
+          'No aspect detected',
+          '',
+          '',
+          '',
+          '',
+          stmt.insights.interpretation,
+        ]
+          .map(escapeCsvCell)
+          .join(',')
+      );
+      continue;
+    }
+
+    for (const asp of stmt.aspects) {
+      csvLines.push(
+        [
+          stmt.statementId,
+          stmt.speaker ?? '',
+          stmt.timestamp ?? '',
+          stmt.originalText,
+          stmt.overallSentiment,
+          stmt.uncertaintyLevel,
+          stmt.commentTypes.join('; '),
+          stmt.tone,
+          stmt.emotion,
+          stmt.communicationIntent,
+          stmt.languageAnalysis.sarcasmOrIrony,
+          stmt.languageAnalysis.containsNegation ? 'Yes' : 'No',
+          asp.aspectTerm ?? 'Implicit',
+          asp.aspectCategory,
+          asp.isImplicit ? 'Implicit' : 'Explicit',
+          asp.opinionExpression,
+          asp.sentiment,
+          stmt.insights.interpretation,
+        ]
+          .map(escapeCsvCell)
+          .join(',')
+      );
+    }
+  }
 
   triggerDownload(
-    'aspectiq-sample-inspection-report.json',
-    JSON.stringify(payload, null, 2),
+    `aspectiq-batch-results-${sanitizeFileSlug(batch.datasetName)}.csv`,
+    csvLines.join('\n'),
+    'text/csv;charset=utf-8'
+  );
+}
+
+export function exportFailedRowsCsv(datasetName: string, failedRows: BatchRowError[]): void {
+  const lines = ['statement_id,text,error_reason'];
+  for (const row of failedRows) {
+    lines.push([row.statementId, row.text, row.error].map(escapeCsvCell).join(','));
+  }
+  triggerDownload(
+    `aspectiq-errors-${sanitizeFileSlug(datasetName)}.csv`,
+    lines.join('\n'),
+    'text/csv;charset=utf-8'
+  );
+}
+
+export function exportSingleStatementJson(statement: StatementAnalysisOutput): void {
+  triggerDownload(
+    `aspectiq-statement-${sanitizeFileSlug(statement.analysisId ?? statement.statementId)}.json`,
+    JSON.stringify(statement, null, 2),
     'application/json;charset=utf-8'
   );
 }
 
-/**
- * Downloads a valid UTF-8 CSV template for testing the batch review ingestion pipeline.
- */
+export function exportConversationJson(conversation: ConversationAnalysisResult): void {
+  triggerDownload(
+    `aspectiq-conversation-${sanitizeFileSlug(conversation.title)}.json`,
+    JSON.stringify(conversation, null, 2),
+    'application/json;charset=utf-8'
+  );
+}
+
+export function exportSummaryReportCsv(batch: BatchAnalysisResult): void {
+  const lines: string[] = [];
+  const total = batch.totalStatementsAnalyzed;
+  const pct = (count: number) => (total > 0 ? `${((count / total) * 100).toFixed(1)}%` : '0.0%');
+
+  lines.push('AspectIQ 2.0 Batch Intelligence Summary');
+  lines.push(['Dataset', batch.datasetName].map(escapeCsvCell).join(','));
+  lines.push(['Input Method', batch.inputMethod].map(escapeCsvCell).join(','));
+  lines.push(['Analyzed At', batch.analyzedAt].map(escapeCsvCell).join(','));
+  lines.push(['Total Records Submitted', batch.totalSubmitted].map(escapeCsvCell).join(','));
+  lines.push(['Successfully Analyzed', batch.totalStatementsAnalyzed].map(escapeCsvCell).join(','));
+  lines.push(['Failed Records', batch.failedCount].map(escapeCsvCell).join(','));
+  lines.push(['Total Aspects Extracted', batch.totalAspectsExtracted].map(escapeCsvCell).join(','));
+  lines.push(['Positive', `${batch.sentimentCounts.Positive} (${pct(batch.sentimentCounts.Positive)})`].map(escapeCsvCell).join(','));
+  lines.push(['Negative', `${batch.sentimentCounts.Negative} (${pct(batch.sentimentCounts.Negative)})`].map(escapeCsvCell).join(','));
+  lines.push(['Mixed', `${batch.sentimentCounts.Mixed} (${pct(batch.sentimentCounts.Mixed)})`].map(escapeCsvCell).join(','));
+  lines.push(['Neutral', `${batch.sentimentCounts.Neutral} (${pct(batch.sentimentCounts.Neutral)})`].map(escapeCsvCell).join(','));
+  lines.push('');
+  lines.push(['aspect_category', 'positive_count', 'neutral_count', 'negative_count', 'total_mentions'].join(','));
+
+  for (const row of batch.aspectSummary) {
+    lines.push(
+      [row.aspectCategory, row.positiveCount, row.neutralCount, row.negativeCount, row.totalMentions]
+        .map(escapeCsvCell)
+        .join(',')
+    );
+  }
+
+  triggerDownload(
+    `aspectiq-summary-${sanitizeFileSlug(batch.datasetName)}.csv`,
+    lines.join('\n'),
+    'text/csv;charset=utf-8'
+  );
+}
+
+export function exportSummaryReportJson(batch: BatchAnalysisResult): void {
+  triggerDownload(
+    `aspectiq-batch-${sanitizeFileSlug(batch.datasetName)}.json`,
+    JSON.stringify(batch, null, 2),
+    'application/json;charset=utf-8'
+  );
+}
+
 export function downloadCsvIngestionTemplate(): void {
   const csvRows = [
-    'review_id,domain,review_text',
-    'REV-001,Electronics,"The camera sensor performs wonderfully at dusk, though battery life drains fast during 4K recording."',
-    'REV-002,Restaurants,"Food quality was vibrant and fresh, and our server checked on us promptly despite a busy patio."',
-    'REV-003,Electronics,"The matte display minimizes glare effectively, while speaker volume remains average for video calls."',
+    'statement_id,speaker,timestamp,statement',
+    'STMT-001,Customer A,2026-11-18,"The new update looks fantastic, but it has made the application incredibly slow."',
+    'STMT-002,Customer B,2026-11-19,"Wow, another brilliant decision! Now everything is broken."',
+    'STMT-003,Student,2026-11-20,"Your explanation was clear and easy to understand."',
+    'STMT-004,Manager,2026-11-21,"I appreciate your help, but I disagree with your conclusion."',
   ];
 
-  triggerDownload('aspectiq-review-upload-template.csv', csvRows.join('\n'), 'text/csv;charset=utf-8');
+  triggerDownload('aspectiq-batch-template.csv', csvRows.join('\n'), 'text/csv;charset=utf-8');
 }
